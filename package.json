@@ -1,0 +1,12 @@
+{
+  "name": "boogietime.js",
+  "version": "1.1.0",
+  "author": "somebeaver",
+  "private": true,
+  "scripts": {
+    "docs": "jsdoc2md ./src/Boogietime.js > DOCS.md"
+  },
+  "devDependencies": {
+    "jsdoc-to-markdown": "^6.0.0"
+  }
+}
