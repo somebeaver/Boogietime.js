@@ -5,12 +5,12 @@
  * provides hooks for custom elements to subscribe to.
  */
 import __ from '../../double-u/index.js'
-import * as notifications from '../../../notifications.js'
+import * as notifications from '../../../src/notifications.js'
 import Query from '../../sqleary.js/index.js'
 import i18n from '../../i18n.js/index.js'
 import { Howl } from './deps/howler.js'
 
-export class Boogietime {
+export default class Boogietime {
   constructor() {
     this.state = 'stopped' // can be `playing`, `paused`, `stopped`
 
@@ -26,8 +26,7 @@ export class Boogietime {
     this._currentHowl = null
     this.currentlyPlayingId = 0
 
-    this.trackRow = null
-    this.albumRow = null
+    this.trackObj = null
 
     this._callbacks = {
       'stateChange': [], // fired when the playback state changes (playing/paused/stopped)
@@ -126,7 +125,7 @@ export class Boogietime {
 
     this.queue = []
     this.currentlyPlayingId = 0
-    this.trackRow = null
+    this.trackObj = null
     this.currentQueueItemIndex = null
     
     if (this._currentHowl !== null) {
@@ -257,22 +256,27 @@ export class Boogietime {
       this._currentHowl.unload()
     }
 
-    await this._updateTrackRow(queueItemID) // update this.trackRow
-    await this._updateAlbumRow(queueItemID) // update this.albumRow
-
-    // change our position in the queue
+    // change our position in the queue even if the next data calls will fail.
+    // this is so that the user can press "next"
     this.currentQueueItemIndex = index
     this.currentlyPlayingId = queueItemID
 
+    let trackDataSuccess = await this._updateTrackObj(queueItemID)
+    if (!trackDataSuccess) {
+      console.warn('API call to update trackObj failed')
+      this._locked = false
+      return false
+    }
+
     // if the file cannot be found
-    if (!await this.fileExists(this.trackRow.track_path)) {
-      console.warn(`File cannot be found: ${this.trackRow.track_path}`)
+    if (!await this.fileExists(this.trackObj.file.file_path)) {
+      console.warn(`File cannot be found: ${this.trackObj.file.file_path}`)
       
       // create a notification in the theme
       __('music-app').el().notify({
-        'id': 'player-cannot-load-file-' + this.trackRow.id,
+        'id': 'player-cannot-load-file-' + this.trackObj.file.file_path,
         'title': i18n('notification.cannot-load-music-file.title'),
-        'message': `${i18n('notification.cannot-load-music-file.message').replace('{{song}}', this.trackRow.track_title)}`,
+        'message': `${i18n('notification.cannot-load-music-file.message').replace('{{song}}', this.trackObj.file.file_path)}`,
       })
 
       // unlock the player
@@ -317,7 +321,7 @@ export class Boogietime {
     // the number 0 was chosen because, at this point, the user has listened to
     // 0 seconds, but also because that database column is type INTEGER, so
     // using a string as a flag would be semantically incorrect.
-    await Bridge.ipcAsk('media-api', {
+    let apiResponse = await Bridge.httpApi('/media-api', 'POST', {
       'fn': 'addToMusicHistory',
       'args': [{
         'trackId': queueItemID,
@@ -327,6 +331,10 @@ export class Boogietime {
         'device': 'desktop_fullsize_app'
       }]
     })
+
+    if (apiResponse.statusRange !== 2) {
+      console.error('Error adding entry to playback history with API')
+    }
 
     this._locked = false
 
@@ -338,46 +346,18 @@ export class Boogietime {
    * 
    * @param {number} trackId
    */
-  async _updateTrackRow(trackId) {
-    let trackQuery = await new Query({
-      'table': 'music_tracks',
-      'columns': {
-        'music_tracks.id': trackId
-      },
-      'join': {
-        'table': 'music_artists',
-        'on': {
-          'track_artist_id': 'id'
-        }
-      }
-    })
+  async _updateTrackObj(trackId) {
+    this.trackObj = null
+    let apiResponse = await Bridge.httpApi(`/music-track/${trackId}`)
 
-    if (!trackQuery.results.length) throw new Error(`Player could not find track with ID ${trackId} in database.`)
-
-    this.trackRow = trackQuery.results[0]
-  }
-
-  /**
-   * Updates the internal copy of the currently playing album row object.
-   * 
-   * @param {number} trackId
-   */
-  async _updateAlbumRow(trackId) {
-    if (!this.trackRow) {
-      console.warn('Player._updateAlbumRow() can only be invoked after Player._updateTrackRow()')
-      return
+    if (apiResponse.statusRange !== 2) {
+      console.error('Player could not find track')
+      return false
     }
 
-    let albumQuery = await new Query({
-      'table': 'music_releases',
-      'columns': {
-        'id': this.trackRow.track_release_id
-      }
-    })
+    this.trackObj = apiResponse.response
 
-    if (!albumQuery.results.length) throw new Error(`Player could not find album with ID ${this.trackRow.track_release_id} in database.`)
-
-    this.albumRow = albumQuery.results[0]
+    return true
   }
 
   /**
@@ -468,12 +448,12 @@ export class Boogietime {
    * @param {number} trackId - Track ID. Defaults to the currently playing track.
    */
   createSystemNotification(trackId) {
-    let trackName = this.trackRow.track_title
-    let artistName = this.trackRow.artist_name
+    let trackName = this.trackObj.track_title
+    let artistName = 'caca'
     let albumCover = undefined
 
-    if (this.albumRow.album_artwork !== null) {
-      albumCover = __().__doubleSlashesOnWindowsOnly(Object.values(this.albumRow.album_artwork)[0][75])
+    if (this.trackObj.artwork) {
+      albumCover = this.trackObj.artwork.thumbs['75'].thumb_file
     }
 
     notifications.create(trackName, artistName, albumCover)
@@ -660,7 +640,7 @@ export class Boogietime {
   }
 
   /**
-   * Returns a new howl object for interal use based on the track object in this.trackRow.
+   * Returns a new howl object for interal use based on the track object in this.trackObj.
    * If the user has enabled song preloading, HTML5 web audio will not be used.
    * 
    * @param {number} trackId - A track ID.
@@ -673,8 +653,10 @@ export class Boogietime {
       html5 = false
     }
 
+    console.log('Creating audio')
+
     return new Howl({
-      'src': this.formatFilePath(this.trackRow.track_path),
+      'src': this.formatFilePath(this.trackObj.file.file_path),
       'html5': html5,
       'volume': this._defaultVolume,
       'mute': this.muted,
@@ -725,7 +707,7 @@ export class Boogietime {
     // has already deleted the track duration. there is no earlier callback
     // available. fortunately, we can get the values from the Player object
     if (trackPlaybackCompleted) {
-      secondsListened = this.trackRow.track_duration
+      secondsListened = this.trackObj.track_duration
       percentListened = 100
     } 
     // get the elapsed seconds from Howler
