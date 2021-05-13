@@ -672,7 +672,7 @@ export default class Boogietime {
    * 
    * - Track ends normally
    * - User pressed next
-   * - User press prev and it wasn't within the restart time
+   * - User pressed prev and it wasn't within the restart time
    * - User presses stop
    * 
    * The state of the track will be saved in the database.
@@ -717,13 +717,20 @@ export default class Boogietime {
     }
     
     // save the amount of time that the user listened to the song for
-    await Bridge.ipcAsk('db-api', {
+    let apiReq = await Bridge.httpApi('/db-api', 'POST', {
       'fn': 'update',
       'args': ['music_history', historyQuery.results[0].id, {
         'music_history_seconds_listened': secondsListened,
         'music_history_percent_listened': percentListened
       }]
     })
+
+    if (apiReq.statusRange !== 2) {
+      console.warn('Could not update track state at end of track')
+      return false
+    }
+
+    return true
   }
 
   /**
