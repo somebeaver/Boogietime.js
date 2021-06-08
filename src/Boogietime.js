@@ -47,7 +47,7 @@ export default class Boogietime {
 
     this.options = options || {}
 
-    this.consoleColor = '#5fb64a'
+    this.consoleColor = '#d61fd0'
   }
 
   /**
