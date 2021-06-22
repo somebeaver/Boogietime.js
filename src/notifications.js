@@ -28,6 +28,9 @@ export async function create(title, description, image) {
 function canSendNotification() {
   return new Promise((resolve, reject) => {
 
+    // can't do notifications on the web without HTTPS
+    if (!('Notification' in window)) return false
+
     // if we already have permission
     if (window.Notification.permission === 'granted') {
       resolve(true)
